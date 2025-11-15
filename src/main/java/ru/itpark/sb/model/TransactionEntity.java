@@ -32,6 +32,9 @@ public class TransactionEntity {
     @Column(name = "description", length = 255)
     private String description;
 
+    @Column(name = "recipient_id")
+    private Long recipientId;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -52,6 +55,8 @@ public class TransactionEntity {
 
     public enum TransactionType {
         DEPOSIT,
-        WITHDRAWAL
+        WITHDRAWAL,
+        TRANSFER_OUT,
+        TRANSFER_IN
     }
 }

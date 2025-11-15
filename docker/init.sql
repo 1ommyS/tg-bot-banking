@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     type VARCHAR(20) NOT NULL,
     amount DECIMAL(15, 2) NOT NULL,
     description VARCHAR(255),
+    recipient_id BIGINT,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_transaction_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );

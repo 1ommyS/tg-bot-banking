@@ -103,7 +103,9 @@ class BankingBotTest {
         assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "💰 Баланс"));
         assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "💳 Пополнить"));
         assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "💸 Снять"));
+        assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "📤 Перевод"));
         assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "📜 История"));
+        assertTrue((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "📊 Статистика"));
 
         assertFalse((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "Unknown"));
         assertFalse((Boolean) isMainMenuButtonMethod.invoke(bankingBot, "/start"));

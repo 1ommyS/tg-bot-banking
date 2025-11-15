@@ -22,8 +22,13 @@ public class KeyboardFactory {
 
         KeyboardRow row2 = new KeyboardRow();
         row2.add("💸 Снять");
-        row2.add("📜 История");
+        row2.add("📤 Перевод");
         keyboardRows.add(row2);
+
+        KeyboardRow row3 = new KeyboardRow();
+        row3.add("📜 История");
+        row3.add("📊 Статистика");
+        keyboardRows.add(row3);
 
         keyboardMarkup.setKeyboard(keyboardRows);
         return keyboardMarkup;

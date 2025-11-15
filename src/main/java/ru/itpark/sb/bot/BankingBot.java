@@ -10,6 +10,7 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ru.itpark.sb.keyboard.KeyboardFactory;
 import ru.itpark.sb.model.TransactionEntity;
 import ru.itpark.sb.service.BankingService;
+import ru.itpark.sb.service.BankingService.TransactionStatistics;
 
 import java.math.BigDecimal;
 import java.text.NumberFormat;
@@ -31,8 +32,12 @@ public class BankingBot extends TelegramLongPollingBot {
     private enum BotState {
         IDLE,
         WAITING_DEPOSIT_AMOUNT,
-        WAITING_WITHDRAWAL_AMOUNT
+        WAITING_WITHDRAWAL_AMOUNT,
+        WAITING_TRANSFER_RECIPIENT,
+        WAITING_TRANSFER_AMOUNT
     }
+    
+    private final Map<Long, Long> pendingTransfers = new HashMap<>();
 
     public BankingBot(String botToken, String botUsername) {
         this.botToken = botToken;
@@ -63,6 +68,7 @@ public class BankingBot extends TelegramLongPollingBot {
                 if (text.equals("❌ Отмена")) {
                     handleCancel(chatId);
                     userStates.put(chatId, BotState.IDLE);
+                    pendingTransfers.remove(chatId);
                     return;
                 }
 
@@ -78,6 +84,12 @@ public class BankingBot extends TelegramLongPollingBot {
                         break;
                     case WAITING_WITHDRAWAL_AMOUNT:
                         handleWithdrawalAmount(chatId, telegramId, text);
+                        break;
+                    case WAITING_TRANSFER_RECIPIENT:
+                        handleTransferRecipient(chatId, telegramId, text);
+                        break;
+                    case WAITING_TRANSFER_AMOUNT:
+                        handleTransferAmount(chatId, telegramId, text);
                         break;
                     case IDLE:
                     default:
@@ -114,8 +126,14 @@ public class BankingBot extends TelegramLongPollingBot {
             case "💸 Снять":
                 handleWithdrawal(chatId);
                 break;
+            case "📤 Перевод":
+                handleTransfer(chatId);
+                break;
             case "📜 История":
                 handleHistory(chatId, telegramId);
+                break;
+            case "📊 Статистика":
+                handleStatistics(chatId, telegramId);
                 break;
             default:
                 sendMessage(chatId, "Пожалуйста, используйте кнопки меню.");
@@ -212,8 +230,29 @@ public class BankingBot extends TelegramLongPollingBot {
             DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm");
             
             for (TransactionEntity transaction : transactions) {
-                String typeEmoji = transaction.getType() == TransactionEntity.TransactionType.DEPOSIT ? "➕" : "➖";
-                String typeText = transaction.getType() == TransactionEntity.TransactionType.DEPOSIT ? "Пополнение" : "Снятие";
+                String typeEmoji;
+                String typeText;
+                switch (transaction.getType()) {
+                    case DEPOSIT:
+                        typeEmoji = "➕";
+                        typeText = "Пополнение";
+                        break;
+                    case WITHDRAWAL:
+                        typeEmoji = "➖";
+                        typeText = "Снятие";
+                        break;
+                    case TRANSFER_OUT:
+                        typeEmoji = "📤";
+                        typeText = "Перевод";
+                        break;
+                    case TRANSFER_IN:
+                        typeEmoji = "📥";
+                        typeText = "Получен перевод";
+                        break;
+                    default:
+                        typeEmoji = "💰";
+                        typeText = "Операция";
+                }
                 
                 message.append(typeEmoji).append(" ").append(typeText)
                         .append(": ").append(formatter.format(transaction.getAmount())).append(" ₽\n")
@@ -221,6 +260,9 @@ public class BankingBot extends TelegramLongPollingBot {
                 
                 if (transaction.getDescription() != null && !transaction.getDescription().isEmpty()) {
                     message.append("📝 ").append(transaction.getDescription()).append("\n");
+                }
+                if (transaction.getRecipientId() != null) {
+                    message.append("👤 Получатель: ").append(transaction.getRecipientId()).append("\n");
                 }
                 message.append("\n");
             }
@@ -233,11 +275,132 @@ public class BankingBot extends TelegramLongPollingBot {
         }
     }
 
+    private void handleTransfer(Long chatId) {
+        userStates.put(chatId, BotState.WAITING_TRANSFER_RECIPIENT);
+        String message = "📤 Перевод средств\n\n" +
+                "Введите Telegram ID получателя (число):\n\n" +
+                "💡 Подсказка: Telegram ID можно узнать у получателя";
+        sendMessageWithKeyboard(chatId, message, KeyboardFactory.createCancelMenu());
+    }
+
+    private void handleTransferRecipient(Long chatId, Long telegramId, String recipientText) {
+        try {
+            Long recipientTelegramId = Long.parseLong(recipientText.trim());
+            
+            if (recipientTelegramId.equals(telegramId)) {
+                sendMessageWithKeyboard(chatId, "❌ Нельзя переводить средства самому себе!\n\nПопробуйте снова или отмените операцию.", 
+                        KeyboardFactory.createCancelMenu());
+                return;
+            }
+
+            try {
+                bankingService.getUserByTelegramId(recipientTelegramId);
+            } catch (RuntimeException e) {
+                sendMessageWithKeyboard(chatId, "❌ Получатель с таким Telegram ID не найден в системе!\n\nПопробуйте снова или отмените операцию.", 
+                        KeyboardFactory.createCancelMenu());
+                return;
+            }
+
+            pendingTransfers.put(chatId, recipientTelegramId);
+            userStates.put(chatId, BotState.WAITING_TRANSFER_AMOUNT);
+            String message = "💵 Введите сумму для перевода:";
+            sendMessageWithKeyboard(chatId, message, KeyboardFactory.createCancelMenu());
+        } catch (NumberFormatException e) {
+            sendMessageWithKeyboard(chatId, "❌ Неверный формат Telegram ID. Введите число.\n\nПопробуйте снова или отмените операцию.", 
+                    KeyboardFactory.createCancelMenu());
+        }
+    }
+
+    private void handleTransferAmount(Long chatId, Long telegramId, String amountText) {
+        Long recipientId = pendingTransfers.get(chatId);
+        if (recipientId == null) {
+            sendMessageWithKeyboard(chatId, "❌ Ошибка: получатель не указан. Начните перевод заново.", 
+                    KeyboardFactory.createMainMenu());
+            userStates.put(chatId, BotState.IDLE);
+            pendingTransfers.remove(chatId);
+            return;
+        }
+
+        try {
+            BigDecimal amount = parseAmount(amountText);
+            TransactionEntity transaction = bankingService.transfer(telegramId, recipientId, amount, "Перевод между пользователями");
+            
+            NumberFormat formatter = NumberFormat.getNumberInstance(Locale.getDefault());
+            formatter.setMinimumFractionDigits(2);
+            formatter.setMaximumFractionDigits(2);
+            
+            String recipientUsername = "";
+            try {
+                recipientUsername = " (" + bankingService.getUserByTelegramId(recipientId).getUsername() + ")";
+            } catch (Exception e) {
+            }
+            
+            String message = "✅ Перевод выполнен!\n\n" +
+                    "📤 Отправлено: " + formatter.format(amount) + " ₽\n" +
+                    "👤 Получатель: " + recipientId + recipientUsername + "\n\n" +
+                    "💰 Ваш баланс: " + formatter.format(bankingService.getBalance(telegramId)) + " ₽";
+            sendMessageWithKeyboard(chatId, message, KeyboardFactory.createMainMenu());
+            userStates.put(chatId, BotState.IDLE);
+            pendingTransfers.remove(chatId);
+            logger.info("Перевод выполнен: от {} к {}, сумма: {}", telegramId, recipientId, amount);
+        } catch (IllegalArgumentException e) {
+            logger.warn("Ошибка при переводе от telegramId: {} к {}, сумма: {}, ошибка: {}", 
+                    telegramId, recipientId, amountText, e.getMessage());
+            sendMessageWithKeyboard(chatId, "❌ " + e.getMessage() + "\n\nПопробуйте снова или отмените операцию.", 
+                    KeyboardFactory.createCancelMenu());
+        }
+    }
+
+    private void handleStatistics(Long chatId, Long telegramId) {
+        try {
+            TransactionStatistics stats = bankingService.getStatistics(telegramId);
+            NumberFormat formatter = NumberFormat.getNumberInstance(Locale.getDefault());
+            formatter.setMinimumFractionDigits(2);
+            formatter.setMaximumFractionDigits(2);
+            
+            StringBuilder message = new StringBuilder("📊 Ваша статистика:\n\n");
+            
+            message.append("💰 Баланс: ").append(formatter.format(bankingService.getBalance(telegramId))).append(" ₽\n\n");
+            
+            message.append("📈 Пополнения:\n");
+            message.append("  • Всего: ").append(formatter.format(stats.getTotalDeposits())).append(" ₽\n");
+            message.append("  • Количество: ").append(stats.getDepositCount()).append("\n");
+            if (stats.getDepositCount() > 0) {
+                message.append("  • Средняя сумма: ").append(formatter.format(stats.getAvgDeposit())).append(" ₽\n");
+            }
+            message.append("\n");
+            
+            message.append("📉 Снятия:\n");
+            message.append("  • Всего: ").append(formatter.format(stats.getTotalWithdrawals())).append(" ₽\n");
+            message.append("  • Количество: ").append(stats.getWithdrawalCount()).append("\n");
+            if (stats.getWithdrawalCount() > 0) {
+                message.append("  • Средняя сумма: ").append(formatter.format(stats.getAvgWithdrawal())).append(" ₽\n");
+            }
+            message.append("\n");
+            
+            if (stats.getTransferOutCount() > 0 || stats.getTransferInCount() > 0) {
+                message.append("📤 Переводы:\n");
+                message.append("  • Отправлено: ").append(formatter.format(stats.getTotalTransfersOut())).append(" ₽ (").append(stats.getTransferOutCount()).append(")\n");
+                message.append("  • Получено: ").append(formatter.format(stats.getTotalTransfersIn())).append(" ₽ (").append(stats.getTransferInCount()).append(")\n\n");
+            }
+            
+            message.append("📋 Всего транзакций: ").append(stats.getTotalTransactions());
+            
+            sendMessageWithKeyboard(chatId, message.toString(), KeyboardFactory.createMainMenu());
+            logger.debug("Статистика запрошена для пользователя telegramId: {}, chatId: {}", telegramId, chatId);
+        } catch (Exception e) {
+            logger.error("Ошибка при получении статистики для telegramId: {}, chatId: {}", telegramId, chatId, e);
+            sendMessage(chatId, "❌ Ошибка при получении статистики: " + e.getMessage());
+        }
+    }
+
     private boolean isMainMenuButton(String text) {
         return text.equals("💰 Баланс") || 
                text.equals("💳 Пополнить") || 
                text.equals("💸 Снять") || 
-               text.equals("📜 История");
+               text.equals("📤 Перевод") ||
+               text.equals("📜 История") ||
+               text.equals("📊 Статистика");
     }
 
     private BigDecimal parseAmount(String amountText) {
